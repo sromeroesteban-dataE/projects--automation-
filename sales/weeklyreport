@@ -1,0 +1,352 @@
+{
+  "name": "Weekly Report - Power BI to Email",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://login.microsoftonline.com/{{AZURE_TENANT_ID}}/oauth2/v2.0/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "{{AZURE_CLIENT_ID}}"
+            },
+            {
+              "name": "client_secret",
+              "value": "{{AZURE_CLIENT_SECRET}}"
+            },
+            {
+              "name": "scope",
+              "value": "https://analysis.windows.net/powerbi/api/.default"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "23b3b1fb-c9a0-44b4-ab17-da911aed017e",
+      "name": "Azure OAuth Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        656,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// CONFIGURATION - Edit these values\n// ============================================================\nconst WORKSPACE_ID = '{{POWERBI_WORKSPACE_ID}}';\nconst DATASET_ID = '{{POWERBI_DATASET_ID}}';\nconst RECIPIENTS ='{{REPORT_RECIPIENTS}}';\n\n\n// ============================================================\n// DATE CALCULATIONS\n// ============================================================\nconst now = new Date();\nconst currentYear = now.getFullYear();\nconst currentMonth = now.getMonth() + 1;\nconst currentQuarter = Math.ceil(currentMonth / 3);\n\n// Quarter label (Q1, Q2, etc.)\nconst quarterLabel = `Q${currentQuarter}`;\n\n// Month name in Spanish\nconst monthNames = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',\n  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];\nconst monthLabel = monthNames[currentMonth];\n\nconst token = $input.first().json.access_token;\nconst apiUrl = `https://api.powerbi.com/v1.0/myorg/groups/${WORKSPACE_ID}/datasets/${DATASET_ID}/executeQueries`;\n\nreturn [{\n  json: {\n    token,\n    apiUrl,\n    recipients: RECIPIENTS,\n    currentYear,\n    currentMonth,\n    currentQuarter,\n    quarterLabel,\n    monthLabel\n  }\n}];"
+      },
+      "id": "8ee7553e-d781-4803-bd19-633d9714787b",
+      "name": "Config & Date Calc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// DAX QUERIES - Based on actual Power BI model\n// ============================================================\n// Tables: Calendar, UNION_TARGET_VS_SALES, VIEW_DEALS_SALES\n// Measures: [Target], [Revenue], [ExpectRevenue], [Booking]\n// Market column: UNION_TARGET_VS_SALES[REGION]\n// Date filters: Calendar[Año], Calendar[Trimestre], Calendar[MesNumerico]\n// ============================================================\n\nconst input = $input.first().json;\nconst year = input.currentYear;\nconst month = input.currentMonth;\nconst quarter = `Q${input.currentQuarter}`;\n\nfunction buildQuery(name, dax) {\n  return {\n    queryName: name,\n    token: input.token,\n    apiUrl: input.apiUrl,\n    recipients: input.recipients,\n    currentYear: input.currentYear,\n    currentMonth: input.currentMonth,\n    quarterLabel: input.quarterLabel,\n    monthLabel: input.monthLabel,\n    queryPayload: JSON.stringify({\n      queries: [{ query: dax }],\n      serializerSettings: { includeNulls: true }\n    })\n  };\n}\n\n// -------------------------------------------------------\n// QUERY 1: KPIs by Market - Quarter to Date\n// Uses the existing measures [Target], [Revenue],\n// [ExpectRevenue], [Booking] with Calendar filters\n// for the current year and quarter.\n// UNION_TARGET_VS_SALES[REGION] is the market dimension\n// that drives Target via TREATAS.\n// -------------------------------------------------------\nconst q1_qtd = buildQuery('kpi_qtd', `\n  EVALUATE\n  SUMMARIZECOLUMNS(\n    UNION_TARGET_VS_SALES[REGION],\n    TREATAS({${year}}, 'Calendar'[Año]),\n    TREATAS({\"${quarter}\"}, 'Calendar'[Trimestre]),\n    \"Target\", [Target],\n    \"Revenue\", [Revenue],\n    \"ExpectedRevenue\", [ExpectRevenue],\n    \"Bookings\", [Booking]\n  )\n  ORDER BY UNION_TARGET_VS_SALES[REGION]\n`);\n\n// -------------------------------------------------------\n// QUERY 2: KPIs by Market - Month to Date\n// Same measures but filtered to current month.\n// -------------------------------------------------------\nconst q2_mtd = buildQuery('kpi_mtd', `\n  EVALUATE\n  SUMMARIZECOLUMNS(\n    UNION_TARGET_VS_SALES[REGION],\n    TREATAS({${year}}, 'Calendar'[Año]),\n    TREATAS({${month}}, 'Calendar'[MesNumerico]),\n    \"Target\", [Target],\n    \"Revenue\", [Revenue],\n    \"ExpectedRevenue\", [ExpectRevenue],\n    \"Bookings\", [Booking]\n  )\n  ORDER BY UNION_TARGET_VS_SALES[REGION]\n`);\n\n// -------------------------------------------------------\n// QUERY 3: Campaign detail - Month to Date (ongoing)\n// Pulls deal-level detail for campaigns that are NOT\n// yet closed (LAST_EVENT != CIERRES_GANADOS and\n// != CIERRES_PERDIDOS) filtered to current month.\n// Adjust the LAST_EVENT filter as needed.\n// -------------------------------------------------------\nconst q3_campaigns = buildQuery('campaigns', `\n  EVALUATE\n  VAR AllDeals = \n    DISTINCT(VIEW_DEALS_SALES[DEAL_ID])\n  VAR DetalleDeals =\n    ADDCOLUMNS(\n      AllDeals,\n      \"DealName\", LOOKUPVALUE(VIEW_DEALS_SALES[DEALNAME], VIEW_DEALS_SALES[DEAL_ID], [DEAL_ID]),\n      \"Advertiser\", LOOKUPVALUE(VIEW_DEALS_SALES[NOMBRE_ANUNCIANTE], VIEW_DEALS_SALES[DEAL_ID], [DEAL_ID]),\n      \"Market\", LOOKUPVALUE(VIEW_DEALS_SALES[MERCADOS], VIEW_DEALS_SALES[DEAL_ID], [DEAL_ID]),\n      \"Revenue\", CALCULATE([Revenue], TREATAS({[DEAL_ID]}, VIEW_DEALS_SALES[DEAL_ID]), TREATAS({${year}}, 'Calendar'[Año]), TREATAS({${month}}, 'Calendar'[MesNumerico])),\n      \"ExpectedRevenue\", CALCULATE([ExpectRevenue], TREATAS({[DEAL_ID]}, VIEW_DEALS_SALES[DEAL_ID]), TREATAS({${year}}, 'Calendar'[Año]), TREATAS({${month}}, 'Calendar'[MesNumerico]))\n    )\n  RETURN\n    FILTER(DetalleDeals, [Revenue] <> 0 || [ExpectedRevenue] <> 0)\n  ORDER BY [Market], [Revenue] DESC\n`);\n\nconst q4_bookings = buildQuery('bookings_detail', `\n  EVALUATE\n  VAR AllDeals = \n    DISTINCT(VIEW_DEALS_SALES[DEAL_ID])\n  VAR DetalleDeals =\n    ADDCOLUMNS(\n      AllDeals,\n      \"DealName\", LOOKUPVALUE(VIEW_DEALS_SALES[DEALNAME], VIEW_DEALS_SALES[DEAL_ID], [DEAL_ID]),\n      \"Advertiser\", LOOKUPVALUE(VIEW_DEALS_SALES[NOMBRE_ANUNCIANTE], VIEW_DEALS_SALES[DEAL_ID], [DEAL_ID]),\n      \"Market\", LOOKUPVALUE(VIEW_DEALS_SALES[MERCADOS], VIEW_DEALS_SALES[DEAL_ID], [DEAL_ID]),\n      \"Bookings\", CALCULATE([Booking], TREATAS({[DEAL_ID]}, VIEW_DEALS_SALES[DEAL_ID]), TREATAS({${year}}, 'Calendar'[Año]), TREATAS({${month}}, 'Calendar'[MesNumerico]))\n    )\n  RETURN\n    FILTER(DetalleDeals, [Bookings] <> 0)\n  ORDER BY [Market], [Bookings] DESC\n`);\n\nreturn [\n  { json: q1_qtd },\n  { json: q2_mtd },\n  { json: q3_campaigns },\n  { json: q4_bookings }\n];"
+      },
+      "id": "6a879e1b-a291-436f-816e-25090468619a",
+      "name": "Build DAX Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "732431b5-4ee9-42e4-8390-5647ec88290a",
+      "name": "Loop Queries",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1312,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.apiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.queryPayload }}\n",
+        "options": {}
+      },
+      "id": "b6acdb48-73e9-4509-87cf-dce3989e6440",
+      "name": "Execute DAX Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1424,
+        304
+      ],
+      "notes": "Sends DAX query to Power BI executeQueries API.\nAuth: Bearer token from Azure OAuth node.\nNo credential needed - token is passed dynamically."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse DAX query result\nconst response = $input.first().json;\nconst loopItem = $('Loop Queries').item.json;\n\nlet rows = [];\ntry {\n  rows = response.results[0].tables[0].rows;\n} catch (e) {\n  rows = [];\n}\n\nreturn [{\n  json: {\n    queryName: loopItem.queryName,\n    rows,\n    token: loopItem.token,\n    apiUrl: loopItem.apiUrl,\n    recipients: loopItem.recipients,\n    currentYear: loopItem.currentYear,\n    currentMonth: loopItem.currentMonth,\n    quarterLabel: loopItem.quarterLabel,\n    monthLabel: loopItem.monthLabel\n  }\n}];"
+      },
+      "id": "e5c5462c-f3b9-4b27-b6b0-0f4e1cfd8c16",
+      "name": "Parse DAX Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// AGGREGATE ALL RESULTS & BUILD HTML EMAIL\n// ============================================================\n\nconst items = $input.all();\nconst data = {};\nlet meta = {};\n\nfor (const item of items) {\n  const { queryName, rows, ...rest } = item.json;\n  data[queryName] = rows || [];\n  meta = rest;\n}\n\n// ---- Helper functions ----\nfunction fmt(n) {\n  if (n === null || n === undefined || isNaN(n)) return '$0';\n  return '$' + Math.round(Number(n)).toLocaleString('en-US');\n}\n\nfunction pct(actual, target) {\n  if (!target || target === 0) return '—';\n  return ((actual / target) * 100).toFixed(1) + '%';\n}\n\n// ---- Process KPI data ----\nconst qtdRows = data.kpi_qtd || [];\nconst mtdRows = data.kpi_mtd || [];\nconst campaignRows = data.campaigns || [];\n\n// Get unique markets - EXCLUDE ROW and blank\nconst markets = [...new Set([\n  ...qtdRows.map(r => r['UNION_TARGET_VS_SALES[REGION]']),\n  ...mtdRows.map(r => r['UNION_TARGET_VS_SALES[REGION]'])\n])].filter(m => m && m !== 'ROW').sort();\n\n// Helper to get row\nfunction getRow(rows, market) {\n  return rows.find(r => r['UNION_TARGET_VS_SALES[REGION]'] === market) || {};\n}\n\nfunction sumField(rows, field) {\n  return rows\n    .filter(r => r['UNION_TARGET_VS_SALES[REGION]'] && r['UNION_TARGET_VS_SALES[REGION]'] !== 'ROW')\n    .reduce((acc, r) => acc + (Number(r[field]) || 0), 0);\n}\n\n// Global totals (excluding ROW and blank)\nconst globalQTD = {\n  target: sumField(qtdRows, '[Target]'),\n  revenue: sumField(qtdRows, '[Revenue]'),\n  expected: sumField(qtdRows, '[ExpectedRevenue]'),\n  bookings: sumField(qtdRows, '[Bookings]')\n};\n\nconst globalMTD = {\n  target: sumField(mtdRows, '[Target]'),\n  revenue: sumField(mtdRows, '[Revenue]'),\n  expected: sumField(mtdRows, '[ExpectedRevenue]'),\n  bookings: sumField(mtdRows, '[Bookings]')\n};\n\n// ---- Build HTML ----\nconst reportDate = new Date().toISOString().split('T')[0];\nconst { quarterLabel, monthLabel, currentYear } = meta;\n\nconst styles = `\n<style>\n  body { font-family: Arial, Helvetica, sans-serif; color: #1f2937; margin: 0; padding: 0; background: #f9fafb; }\n  .container { max-width: 850px; margin: 0 auto; padding: 24px; }\n  .header { background: linear-gradient(135deg, #7c3aed, #8b5cf6, #6366f1); color: white; padding: 28px 32px; border-radius: 16px; margin-bottom: 28px; }\n  .header h1 { margin: 0; font-size: 24px; font-weight: 700; }\n  .header p { margin: 8px 0 0; opacity: 0.9; font-size: 14px; }\n  .kpi-row-title { font-size: 14px; font-weight: 600; color: #7c3aed; margin: 20px 0 10px; text-transform: uppercase; letter-spacing: 0.5px; }\n  .kpi-cards { display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }\n  .kpi-card { flex: 1; min-width: 180px; background: white; border-radius: 12px; padding: 16px; border: 1px solid #e5e7eb; }\n  .kpi-card .label { font-size: 11px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.5px; margin-bottom: 4px; }\n  .kpi-card .value { font-size: 26px; font-weight: 700; color: #1f2937; }\n  .kpi-card .sub { font-size: 13px; margin-top: 4px; }\n  .kpi-card .pct-highlight { font-weight: 700; font-size: 14px; color: #1f2937; }\n  .section { margin-bottom: 28px; }\n  .section h2 { font-size: 16px; color: #7c3aed; margin: 0 0 14px; padding-bottom: 8px; border-bottom: 2px solid #ede9fe; }\n  table { width: 100%; border-collapse: collapse; font-size: 12px; background: white; border-radius: 8px; overflow: hidden; border: 1px solid #e5e7eb; }\n  th { background: #f5f3ff; color: #5b21b6; text-align: right; padding: 8px 10px; font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }\n  th:first-child { text-align: left; }\n  td { padding: 8px 10px; text-align: right; border-top: 1px solid #f3f4f6; }\n  td:first-child { text-align: left; font-weight: 500; color: #374151; }\n  tr.global-row { background: #faf5ff; }\n  tr.global-row td { font-weight: 700; border-top: 2px solid #ddd6fe; border-bottom: 2px solid #ddd6fe; }\n  .footer { margin-top: 36px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af; text-align: center; }\n</style>`;\n\n// ---- KPI Cards (same as before) ----\nconst kpiRow1 = `\n<div class=\"kpi-row-title\">${quarterLabel} — Quarter to Date</div>\n<div class=\"kpi-cards\">\n  <div class=\"kpi-card\">\n    <div class=\"label\">Target ${quarterLabel}</div>\n    <div class=\"value\">${fmt(globalQTD.target)}</div>\n  </div>\n  <div class=\"kpi-card\">\n    <div class=\"label\">Revenue ${quarterLabel}</div>\n    <div class=\"value\">${fmt(globalQTD.revenue)}</div>\n    <div class=\"sub\"><span class=\"pct-highlight\">${pct(globalQTD.revenue, globalQTD.target)}</span> vs Target</div>\n  </div>\n  <div class=\"kpi-card\">\n    <div class=\"label\">Expected Revenue ${quarterLabel}</div>\n    <div class=\"value\">${fmt(globalQTD.expected)}</div>\n  </div>\n  <div class=\"kpi-card\">\n    <div class=\"label\">Bookings ${quarterLabel}</div>\n    <div class=\"value\">${fmt(globalQTD.bookings)}</div>\n  </div>\n</div>`;\n\nconst kpiRow2 = `\n<div class=\"kpi-row-title\">${monthLabel} — Month to Date</div>\n<div class=\"kpi-cards\">\n  <div class=\"kpi-card\">\n    <div class=\"label\">Target ${monthLabel}</div>\n    <div class=\"value\">${fmt(globalMTD.target)}</div>\n  </div>\n  <div class=\"kpi-card\">\n    <div class=\"label\">Revenue ${monthLabel}</div>\n    <div class=\"value\">${fmt(globalMTD.revenue)}</div>\n    <div class=\"sub\"><span class=\"pct-highlight\">${pct(globalMTD.revenue, globalMTD.target)}</span> vs Target</div>\n  </div>\n  <div class=\"kpi-card\">\n    <div class=\"label\">Expected Revenue ${monthLabel}</div>\n    <div class=\"value\">${fmt(globalMTD.expected)}</div>\n  </div>\n  <div class=\"kpi-card\">\n    <div class=\"label\">Bookings ${monthLabel}</div>\n    <div class=\"value\">${fmt(globalMTD.bookings)}</div>\n  </div>\n</div>`;\n\n// ---- KPI Table - REORDERED: Q columns first, then Month columns ----\nfunction kpiRow(label, qtd, mtd, isGlobal = false) {\n  const cls = isGlobal ? ' class=\"global-row\"' : '';\n  return `<tr${cls}>\n    <td>${label}</td>\n    <td>${fmt(qtd.target)}</td>\n    <td>${fmt(qtd.revenue)} <span style=\"font-weight:700;font-size:11px;margin-left:4px;\">(${pct(qtd.revenue, qtd.target)})</span></td>\n    <td>${fmt(qtd.expected)}</td>\n    <td>${fmt(qtd.bookings)}</td>\n    <td>${fmt(mtd.target)}</td>\n    <td>${fmt(mtd.revenue)} <span style=\"font-weight:700;font-size:11px;margin-left:4px;\">(${pct(mtd.revenue, mtd.target)})</span></td>\n    <td>${fmt(mtd.expected)}</td>\n    <td>${fmt(mtd.bookings)}</td>\n  </tr>`;\n}\n\nlet marketRows = kpiRow('GLOBAL', globalQTD, globalMTD, true);\nfor (const m of markets) {\n  const qtd = getRow(qtdRows, m);\n  const mtd = getRow(mtdRows, m);\n  const mQTD = {\n    target: Number(qtd['[Target]']) || 0,\n    revenue: Number(qtd['[Revenue]']) || 0,\n    expected: Number(qtd['[ExpectedRevenue]']) || 0,\n    bookings: Number(qtd['[Bookings]']) || 0\n  };\n  const mMTD = {\n    target: Number(mtd['[Target]']) || 0,\n    revenue: Number(mtd['[Revenue]']) || 0,\n    expected: Number(mtd['[ExpectedRevenue]']) || 0,\n    bookings: Number(mtd['[Bookings]']) || 0\n  };\n  marketRows += kpiRow(m, mQTD, mMTD);\n}\n\nconst kpiTable = `\n<table>\n  <thead>\n    <tr>\n      <th rowspan=\"2\">Market</th>\n      <th colspan=\"4\" style=\"text-align:center;background:#ede9fe;\">${quarterLabel} ${currentYear}</th>\n      <th colspan=\"4\" style=\"text-align:center;background:#e0f2fe;color:#0369a1;\">${monthLabel} ${currentYear}</th>\n    </tr>\n    <tr>\n      <th>Target</th>\n      <th>Revenue</th>\n      <th>Exp. Rev</th>\n      <th>Bookings</th>\n      <th style=\"background:#e0f2fe;color:#0369a1;\">Target</th>\n      <th style=\"background:#e0f2fe;color:#0369a1;\">Revenue</th>\n      <th style=\"background:#e0f2fe;color:#0369a1;\">Exp. Rev</th>\n      <th style=\"background:#e0f2fe;color:#0369a1;\">Bookings</th>\n    </tr>\n  </thead>\n  <tbody>${marketRows}</tbody>\n</table>`;\n\n// ---- Campaign CSV attachment ----\nlet campaignCsv = 'Deal ID,Deal Name,Advertiser,Market,Revenue,Expected Revenue\\n';\nif (campaignRows.length > 0) {\n  for (const c of campaignRows) {\n    const dealId = c['VIEW_DEALS_SALES[DEAL_ID]'] || '';\n    const dealName = (c['[DealName]'] || '').replace(/,/g, ';');\n    const advertiser = (c['[Advertiser]'] || '').replace(/,/g, ';');\n    const market = c['[Market]'] || '';\n    const revenue = Number(c['[Revenue]']) || 0;\n    const expected = Number(c['[ExpectedRevenue]']) || 0;\n    campaignCsv += `${dealId},\"${dealName}\",\"${advertiser}\",${market},${revenue.toFixed(2)},${expected.toFixed(2)}\\n`;\n  }\n}\n\nconst csvBase64 = Buffer.from(campaignCsv, 'utf-8').toString('base64');\n\n\nconst bookingRows = data.bookings_detail || [];\n\nlet bookingsCsv = 'Deal ID,Deal Name,Advertiser,Market,Bookings\\n';\nif (bookingRows.length > 0) {\n  for (const c of bookingRows) {\n    const dealId = c['VIEW_DEALS_SALES[DEAL_ID]'] || '';\n    const dealName = (c['[DealName]'] || '').replace(/,/g, ';');\n    const advertiser = (c['[Advertiser]'] || '').replace(/,/g, ';');\n    const market = c['[Market]'] || '';\n    const bookings = Number(c['[Bookings]']) || 0;\n    bookingsCsv += `${dealId},\"${dealName}\",\"${advertiser}\",${market},${bookings.toFixed(2)}\\n`;\n  }\n}\n\nconst bookingsCsvBase64 = Buffer.from(bookingsCsv, 'utf-8').toString('base64');\n// ---- Assemble Email ----\nconst html = `<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">${styles}</head>\n<body>\n<div class=\"container\">\n  <div class=\"header\">\n    <h1>Weekly Sales Report</h1>\n    <p>{{COMPANY_NAME}} · ${quarterLabel} ${currentYear} · Week of ${reportDate}</p>\n  </div>\n\n  ${kpiRow1}\n  ${kpiRow2}\n\n  <div class=\"section\" style=\"margin-top:24px;\">\n    <h2>KPI Summary by Market</h2>\n    ${kpiTable}\n  </div>\n\n  <div class=\"footer\">\n    <p>Auto-generated from Power BI Sales Intelligence Dashboard · ${reportDate}</p>\n    <p>Ongoing campaigns detail attached as CSV.</p>\n  </div>\n</div>\n</body></html>`;\n\nreturn [{\n  json: {\n    html,\n    recipients: meta.recipients,\n    subject: `Weekly Sales Report — {{COMPANY_NAME}} — ${quarterLabel} ${currentYear} — ${reportDate}`,\n    campaignCsvBase64: csvBase64,\n    campaignFileName: `ongoing_campaigns_${monthLabel}_${currentYear}.csv`,\n    bookingsCsvBase64: bookingsCsvBase64,\n    bookingsFileName: `bookings_detail_${monthLabel}_${currentYear}.csv`\n  }\n}];"
+      },
+      "id": "639233e3-f4cf-4a17-bf5a-fb612a8e28d9",
+      "name": "Aggregate & Build Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.recipients }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "attachment_0,attachment_1"
+              }
+            ]
+          }
+        }
+      },
+      "id": "aaebfd94-3f27-4401-9cae-596b8c4b4fca",
+      "name": "Gmail: Send Report",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2224,
+        80
+      ],
+      "webhookId": "4562c89d-9f52-48d7-a7cd-8eb8994e7695",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "{{ADMIN_EMAIL}}",
+        "subject": "=FAILED: Weekly Sales Report — {{ $now.format('yyyy-MM-dd') }}",
+        "emailType": "text",
+        "message": "=The Weekly Sales Report workflow failed.\n\nError: {{ $json.error?.message || 'Unknown error' }}\nNode: {{ $json.error?.node || 'Unknown' }}\nTimestamp: {{ $now.toISO() }}\n\nPlease check the n8n execution log.",
+        "options": {}
+      },
+      "id": "ce3f63af-2346-426a-9e14-157bc24502bd",
+      "name": "Error Notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2208,
+        416
+      ],
+      "webhookId": "5fbde6d6-4fa2-4031-98e8-1181cb1b0f90",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nreturn [{\n  json: {\n    html: input.html,\n    recipients: input.recipients,\n    subject: input.subject\n  },\n  binary: {\n    attachment_0: {\n      data: input.campaignCsvBase64,\n      mimeType: 'text/csv',\n      fileName: input.campaignFileName\n    },\n    attachment_1: {\n      data: input.bookingsCsvBase64,\n      mimeType: 'text/csv',\n      fileName: input.bookingsFileName\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1984,
+        80
+      ],
+      "id": "0e7d830c-19c6-48db-b25e-8951096d8d4c",
+      "name": "CSV"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                5
+              ],
+              "triggerAtHour": 12
+            }
+          ]
+        }
+      },
+      "id": "be35a344-c034-46ff-bee6-02d627f756f3",
+      "name": "Every week 10AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        432,
+        96
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Azure OAuth Token": {
+      "main": [
+        [
+          {
+            "node": "Config & Date Calc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config & Date Calc": {
+      "main": [
+        [
+          {
+            "node": "Build DAX Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build DAX Queries": {
+      "main": [
+        [
+          {
+            "node": "Loop Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Queries": {
+      "main": [
+        [
+          {
+            "node": "Aggregate & Build Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute DAX Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute DAX Query": {
+      "main": [
+        [
+          {
+            "node": "Parse DAX Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse DAX Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate & Build Email": {
+      "main": [
+        [
+          {
+            "node": "CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CSV": {
+      "main": [
+        [
+          {
+            "node": "Gmail: Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every week 10AM": {
+      "main": [
+        [
+          {
+            "node": "Azure OAuth Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "{{WORKFLOW_VERSION_ID}}",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "{{INSTANCE_ID}}"
+  },
+  "id": "{{WORKFLOW_ID}}",
+  "tags": []
+}
