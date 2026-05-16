@@ -1,0 +1,509 @@
+{
+  "name": "Talent Hunting Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "55b5ba90-0c54-4874-bc43-e261b7dad1f3",
+      "name": "⏰ Cron 08:00 AM (Lun–Vie)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3936,
+        32
+      ],
+      "notes": "Dispara el workflow todos los días hábiles a las 08:00 AM (Argentina, UTC-3). Ajustá el timezone en Settings > Timezone."
+    },
+    {
+      "parameters": {
+        "url": "{{PEOPLEFORCE_API_URL}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "id": "c8849bfb-ece4-4e5f-b48d-01759d89a970",
+      "name": "📄 PeopleForce · Leer vacantes activas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -3664,
+        32
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      },
+      "notes": "SETUP: Crear credencial HTTP Header Auth con Name=X-API-Key y Value=tu_api_key_de_peopleforce. La API devuelve array de vacantes con id, title, description, location."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawResponse = $input.first().json;\nlet vacList = [];\nif (Array.isArray(rawResponse)) {\n  vacList = rawResponse[0]?.data || [];\n} else if (rawResponse.data) {\n  vacList = rawResponse.data;\n} else {\n  vacList = [rawResponse];\n}\n\nvacList = vacList.filter(v => v.state === 'opened');\n\nconst locationMap = {\n  'Brazil': { name: 'Brazil', geo_id: '106057199' },\n  'Brasil': { name: 'Brazil', geo_id: '106057199' },\n  'Argentina': { name: 'Argentina', geo_id: '100446943' },\n  'Mexico': { name: 'Mexico', geo_id: '103323778' },\n  'México': { name: 'Mexico', geo_id: '103323778' },\n  'Colombia': { name: 'Colombia', geo_id: '100876405' },\n  'Uruguay': { name: 'Uruguay', geo_id: '100867946' }\n};\n\nconst adtechCompanies = [\n  'groupm.com', 'wpp.com', 'publicismedia.com', 'publicis.com',\n  'dentsu.com', 'havas.com', 'omnicommediagroup.com', 'mediabrands.com',\n  'thetradedesk.com', 'integralads.com', 'doubleverify.com',\n  'xandr.com', 'teads.com', 'adsmovil.com', 'imslatam.com'\n];\n\nconst results = [];\n\nfor (const v of vacList) {\n  const title = (v.title || '').trim();\n  const locationData = locationMap[v.location?.name] || { name: v.location?.name || 'Argentina', geo_id: '100446943' };\n\n  const descriptionClean = (v.description || '')\n    .replace(/<[^>]*>/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .substring(0, 4000);\n\n  results.push({\n    json: {\n      vacancy_id: v.id,\n      title: title,\n      location: locationData.name,\n      geo_id: locationData.geo_id,\n      description: v.description || '',\n      description_clean: descriptionClean,\n      target_companies: adtechCompanies,\n      processed_at: new Date().toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "5a0aaa7f-c12f-44a7-b44a-be6474bb295e",
+      "name": "🔧 Preparar keywords por vacante",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3392,
+        32
+      ],
+      "notes": "Transforma cada vacante en un objeto con las keywords de búsqueda optimizadas para adtech. Ajustá el keywordMap si los títulos de PeopleForce cambian."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "7fe24d79-5b9f-4fec-be14-4ee9870cba5c",
+      "name": "🔁 Split · una ejecución por vacante",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -2912,
+        32
+      ],
+      "notes": "Procesa cada vacante de forma individual para poder hacer la búsqueda en Apollo por separado."
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst vacancy = $('🔁 Split · una ejecución por vacante').first().json;\n\nconst candidates = [];\n\nfor (const item of items) {\n  const person = item.json;\n  \n  if (!person.linkedinProfileUrl) continue;\n\n  candidates.push({\n    json: {\n      full_name: person.fullName || '',\n      linkedin_url: person.linkedinProfileUrl,\n      current_title: person.headline || '',\n      current_company: person.company || '',\n      current_company2: person.company2 || '',\n      position_raw: person.headline || '',\n      city: person.location || '',\n      country: vacancy.location,\n      email: null,\n      open_to_work: false,\n      additional_info: person.additionalInfo || '',\n      job_title: person.jobTitle || '',\n      job_title2: person.jobTitle2 || '',\n      skills: [],\n      years_experience: 3,\n      vacancy_id: vacancy.vacancy_id,\n      vacancy_title: vacancy.title,\n      vacancy_location: vacancy.location,\n      vacancy_description: vacancy.description,\n      unique_key: person.linkedinProfileUrl,\n      searched_at: new Date().toISOString()\n    }\n  });\n}\n\nreturn candidates.length > 0 \n  ? candidates \n  : [{ json: { skip: true, reason: 'No profiles returned' } }];"
+      },
+      "id": "d0dc34a8-5052-4380-a6dd-7f8f81963dee",
+      "name": "🔧 Extraer candidatos del response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1552,
+        48
+      ],
+      "notes": "Normaliza la respuesta de Apollo en objetos estandarizados. Apollo puede devolver hasta 5 candidatos por búsqueda (configurado en el nodo anterior)."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const response = $input.item.json;\nconst candidate = $('🔧 Extraer candidatos del response').all()[$itemIndex].json;\n\nconst content = response.content?.[0]?.text || '{}';\nconst cleaned = content.replace(/```json|```/g, '').trim();\n\nlet scoring = {};\ntry {\n  scoring = JSON.parse(cleaned);\n} catch(e) {\n  scoring = {\n    score: 0,\n    matched_keywords: [],\n    reasoning: 'Parse error: ' + e.message,\n    urgency: 'low',\n    recommended_action: 'discard',\n    adtech_relevance: 'low'\n  };\n}\n\nconst safeReasoning = (scoring.reasoning || '').replace(/'/g, \"''\");\nconst safeKeywords = (scoring.matched_keywords || []).join(', ').replace(/'/g, \"''\");\n\nreturn {\n  json: {\n    ...candidate,\n    score: scoring.score || 0,\n    matched_keywords: safeKeywords,\n    reasoning: safeReasoning,\n    urgency: scoring.urgency || 'low',\n    recommended_action: scoring.recommended_action || 'discard',\n    adtech_relevance: scoring.adtech_relevance || 'low',\n    scored_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "f2b541c5-89b5-4e86-806a-30a5033b9633",
+      "name": "🔧 Parsear score de Gemini",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        48
+      ],
+      "notes": "Extrae el JSON de la respuesta de Claude y lo combina con los datos del candidato. Maneja errores de parseo para no romper el flujo."
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "minutes"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -2000,
+        48
+      ],
+      "id": "e5faeec1-1240-4d09-9233-b6009d3f23d2",
+      "name": "Wait",
+      "webhookId": "e4924722-f28e-4a04-a161-49fd6fda146e"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Phantombuster-Key",
+              "value": "{{PHANTOMBUSTER_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  id: \"2501250711071289\",\n  argument: JSON.stringify({\n    searchType: \"linkedInSearchUrl\",\n    linkedInSearchUrl: $json.linkedin_search_url,\n    category: \"People\",\n    connectionDegreesToScrape: [\"2\", \"3+\"],\n    numberOfResultsPerLaunch: 25,\n    numberOfResultsPerSearch: 25,\n    enrichLeadsWithAdditionalInformation: true,\n    identities: [{\n      sessionCookie: \"AQEDAWd3tIsCNZhHAAABndqZf4gAAAGd_qYDiE0AGx73K8tePbgYgM-WtL59dYQTq0IPJR1CZGjupc-9B0M3lhHsvt7E9eLZIMe_jb2Q8495yniXmY_BcDiQzdFNgtsPFi8qvcyFgI61jhxzfwb2zmf3\",\n      userAgent: \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36\"\n    }]\n  })\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2208,
+        48
+      ],
+      "id": "cc3191cb-8e27-4e9d-8ddf-0251aa2e9822",
+      "name": "🚀 PhantomBuster Lanzar"
+    },
+    {
+      "parameters": {
+        "url": "{{PHANTOMBUSTER_RESULT_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Phantombuster-Key",
+              "value": "{{PHANTOMBUSTER_API_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1776,
+        48
+      ],
+      "id": "5d8de0ee-fb73-4077-b0ac-a1071f2de57e",
+      "name": "📥 Obtener resultados"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\n\n// El response de Claude viene directo\nconst content = response.content?.[0]?.text || '{}';\nconst cleaned = content.replace(/```json|```/g, '').trim();\n\nlet keywords = {};\ntry {\n  keywords = JSON.parse(cleaned);\n} catch(e) {\n  keywords = {\n    optimized_keywords: 'developer',\n    seniority: 'mid',\n    key_skills: []\n  };\n}\n\n// Recuperar datos de la vacante desde el nodo anterior al Claude\nconst vacancy = $('🔧 Preparar prompt Claude').first().json;\n\nconst encodedKeywords = encodeURIComponent(keywords.optimized_keywords);\nconst encodedGeo = encodeURIComponent(`[\"${vacancy.geo_id}\"]`);\nconst linkedinSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodedKeywords}&geoUrn=${encodedGeo}`;\n\nreturn [{\n  json: {\n    ...vacancy,\n    optimized_keywords: keywords.optimized_keywords,\n    seniority: keywords.seniority,\n    key_skills: keywords.key_skills || [],\n    linkedin_search_url: linkedinSearchUrl\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2432,
+        48
+      ],
+      "id": "4627681a-a6fb-425d-b25b-fafa80a35547",
+      "name": "🔧 Parsear keywords de Claude"
+    },
+    {
+      "parameters": {
+        "jsCode": "const vacancy = $input.first().json;\n\nconst prompt = `Analyze this job vacancy and generate a SHORT optimized LinkedIn search query.\n\nVacancy title: ${vacancy.title}\nLocation: ${vacancy.location}\nDescription: ${vacancy.description_clean}\n\nRules:\n- IGNORE the company description at the beginning ({{REDACTED}} boilerplate)\n- Focus ONLY on the \"What It Takes To Succeed\" and \"What You'll Do\" sections\n- Extract the specific technologies, tools and experience level mentioned\n- Return a SHORT LinkedIn search query (max 6 words)\n- Include seniority level if mentioned (senior, manager, etc)\n- Do NOT include location\n- Return ONE search phrase, not a comma-separated list\n\nExamples of good output:\n- \"Senior Backend Developer .NET C# MySQL\"\n- \"Business Development Manager media adtech\"\n- \"Data Science Manager Python machine learning\"\n\nReturn ONLY raw JSON no markdown:\n{\"optimized_keywords\": \"...\", \"seniority\": \"junior|mid|senior|manager\", \"key_skills\": [\"skill1\", \"skill2\", \"skill3\"]}`;\n\nreturn [{\n  json: {\n    ...vacancy,\n    claude_body: {\n      model: \"claude-haiku-4-5-20251001\",\n      max_tokens: 500,\n      messages: [{ role: \"user\", content: prompt }]\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3136,
+        32
+      ],
+      "id": "6148a67b-4ef7-45f5-99df-9122b9349291",
+      "name": "🔧 Preparar prompt Claude"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const candidate = $('🔧 Extraer candidatos del response').all()[$itemIndex].json;\n\nconst descClean = (candidate.vacancy_description || '')\n  .replace(/<[^>]*>/g, ' ')\n  .replace(/&amp;/g, '&')\n  .replace(/\\s+/g, ' ')\n  .substring(800, 3500);\n\nconst prompt = `You are a talent recruiter. Score this LinkedIn candidate for the job vacancy.\n\nVACANCY:\nTitle: ${candidate.vacancy_title}\nRequired skills: ${descClean}\n\nCANDIDATE:\nName: ${candidate.full_name}\nCurrent title: ${candidate.current_title}\nCurrent company: ${candidate.current_company || ''}\nJob title: ${candidate.job_title || ''}\nPrevious job: ${candidate.job_title2 || ''}\nLocation: ${candidate.city}\nAbout: ${candidate.additional_info || 'No info'}\n\nSCORING RULES:\n- Score 0-100\n- 80+ = strong match (right technologies, enough experience)\n- 50-79 = partial match (some skills but missing key ones)\n- 0-49 = poor match (student, bootcamp-only, no real experience)\n- Penalize: students, bootcamp-only, no real work experience\n- Reward: 5+ years, specific technologies matching vacancy, senior titles\n\nReturn ONLY raw JSON no markdown:\n{\"score\": 0, \"matched_keywords\": [\"kw1\"], \"reasoning\": \"brief\", \"urgency\": \"low|medium|high\", \"recommended_action\": \"contact|save|discard\", \"adtech_relevance\": \"low|medium|high\"}`;\n\nreturn {\n  json: {\n    ...candidate,\n    scoring_body: {\n      model: \"claude-haiku-4-5-20251001\",\n      max_tokens: 300,\n      messages: [{ role: \"user\", content: prompt }]\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1136,
+        48
+      ],
+      "id": "f689d2cb-4c74-4987-8e70-38f1dadecb8d",
+      "name": "🔧 Preparar prompt scoring"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "{{ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.scoring_body) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -928,
+        48
+      ],
+      "id": "4e108685-e3b2-42e5-a15e-6bde54eac646",
+      "name": "🤖 Claude · Scoring"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "{{ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.claude_body) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2672,
+        48
+      ],
+      "id": "f132a4ce-ddb8-4ce4-8f6b-cc306384c959",
+      "name": "🤖 Claude optimizar"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO etl_bi.HR_talent_candidates \n(linkedin_url, full_name, current_title, current_company, city, country, \nvacancy_id, vacancy_title, status, searched_at)\nVALUES (\n'{{ $json.linkedin_url }}',\n'{{ $json.full_name }}',\n'{{ $json.current_title }}',\n'{{ $json.current_company }}',\n'{{ $json.city }}',\n'{{ $json.country }}',\n{{ $json.vacancy_id }},\n'{{ $json.vacancy_title }}',\n'Nuevo',\nNOW()\n)\nON DUPLICATE KEY UPDATE searched_at = NOW();",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -1344,
+        48
+      ],
+      "id": "31d44f9f-83af-4740-abe8-6ac836685012",
+      "name": "💾 MySQL Insert HR_talent_candidates",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE etl_bi.HR_talent_candidates\nSET \n  score = {{ $json.score }},\n  matched_keywords = '{{ $json.matched_keywords }}',\n  reasoning = '{{ $json.reasoning }}',\n  urgency = '{{ $json.urgency }}',\n  recommended_action = '{{ $json.recommended_action }}',\n  adtech_relevance = '{{ $json.adtech_relevance }}',\n  scored_at = NOW()\nWHERE linkedin_url = '{{ $json.linkedin_url }}'\nAND vacancy_id = {{ $json.vacancy_id }};",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -496,
+        48
+      ],
+      "id": "6415b38e-66fa-4145-a197-80c73cbee341",
+      "name": "💾 MySQL Update score",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "⏰ Cron 08:00 AM (Lun–Vie)": {
+      "main": [
+        [
+          {
+            "node": "📄 PeopleForce · Leer vacantes activas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📄 PeopleForce · Leer vacantes activas": {
+      "main": [
+        [
+          {
+            "node": "🔧 Preparar keywords por vacante",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔧 Preparar keywords por vacante": {
+      "main": [
+        [
+          {
+            "node": "🔧 Preparar prompt Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔁 Split · una ejecución por vacante": {
+      "main": [
+        [],
+        [
+          {
+            "node": "🤖 Claude optimizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔧 Extraer candidatos del response": {
+      "main": [
+        [
+          {
+            "node": "💾 MySQL Insert HR_talent_candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔧 Parsear score de Gemini": {
+      "main": [
+        [
+          {
+            "node": "💾 MySQL Update score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "📥 Obtener resultados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🚀 PhantomBuster Lanzar": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📥 Obtener resultados": {
+      "main": [
+        [
+          {
+            "node": "🔧 Extraer candidatos del response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔧 Parsear keywords de Claude": {
+      "main": [
+        [
+          {
+            "node": "🚀 PhantomBuster Lanzar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔧 Preparar prompt Claude": {
+      "main": [
+        [
+          {
+            "node": "🔁 Split · una ejecución por vacante",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔧 Preparar prompt scoring": {
+      "main": [
+        [
+          {
+            "node": "🤖 Claude · Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Claude optimizar": {
+      "main": [
+        [
+          {
+            "node": "🔧 Parsear keywords de Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Claude · Scoring": {
+      "main": [
+        [
+          {
+            "node": "🔧 Parsear score de Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 MySQL Insert HR_talent_candidates": {
+      "main": [
+        [
+          {
+            "node": "🔧 Preparar prompt scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "{{WORKFLOW_VERSION_ID}}",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "{{INSTANCE_ID}}"
+  },
+  "id": "{{WORKFLOW_ID}}",
+  "tags": []
+}
