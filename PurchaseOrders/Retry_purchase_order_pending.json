@@ -1,0 +1,219 @@
+{
+  "name": "Reintentar ODC Pendientes",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 6 * * *" }]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [-240, 0],
+      "id": "446c997b-a249-4283-845a-4be7291b0a02",
+      "name": "Cron 3am"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, ticket_id, link, folder_id, motivo, intentos\nFROM finance_odc_pendientes\nWHERE estado = 'pendiente';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [0, 0],
+      "id": "7cf8a7f3-873f-4218-b671-4d8ba5a6cb37",
+      "name": "Leer Pendientes",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [208, 0],
+      "id": "0e7077f9-0244-478e-925a-5dd5203778dc",
+      "name": "Loop Pendientes"
+    },
+    {
+      "parameters": {
+        "url": "={{GOOGLE_DRIVE_API_URL}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q", "value": "='{{ $json.folder_id }}' in parents and trashed=false" },
+            { "name": "fields", "value": "files(id,name,mimeType,modifiedTime)" },
+            { "name": "supportsAllDrives", "value": "true" },
+            { "name": "includeItemsFromAllDrives", "value": "true" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [464, 16],
+      "id": "37ef9226-e710-4ad2-829c-48aade011263",
+      "name": "Listar Archivos Carpeta Pendiente",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const archivos = $input.first().json.files || [];\nconst pendiente = $('Loop Pendientes').first().json;\nreturn [{ json: { pendienteId: pendiente.id, ticketId: pendiente.ticket_id, folderId: pendiente.folder_id, link: pendiente.link, intentos: pendiente.intentos, cantidadArchivos: archivos.length, hayArchivos: archivos.length > 0 } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [704, 16],
+      "id": "b2433301-8f81-4df4-9e5f-ac2c3ddf2d45",
+      "name": "Evaluar Resultado"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "171cf6d3-0702-4df7-b91d-73a73324d49f", "leftValue": "={{ $json.hayArchivos }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [912, 16],
+      "id": "d12ee0e3-f7ca-4a79-a5b1-d79e23dea417",
+      "name": "IF: Hay Archivos"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "{{LINKED_WORKFLOW_ID}}",
+          "mode": "list",
+          "cachedResultUrl": "{{LINKED_WORKFLOW_URL}}",
+          "cachedResultName": "{{LINKED_WORKFLOW_NAME}}"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticketId": "={{ $json.ticketId }}",
+            "folderId": "={{ $json.folderId }}",
+            "link": "={{ $json.link }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "ticketId", "displayName": "ticketId", "required": false, "defaultMatch": false, "display": true, "canBeUsedToMatch": true, "type": "number", "removed": false },
+            { "id": "folderId", "displayName": "folderId", "required": false, "defaultMatch": false, "display": true, "canBeUsedToMatch": true, "type": "string", "removed": false },
+            { "id": "link", "displayName": "link", "required": false, "defaultMatch": false, "display": true, "canBeUsedToMatch": true, "type": "string", "removed": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1152, -336],
+      "id": "898bcd57-004c-434d-9ff0-4398ea6ea6c5",
+      "name": "Invocar Procesamiento"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE finance_odc_pendientes\nSET estado = 'resuelto',\n    fecha_resolucion = CURRENT_TIMESTAMP,\n    ultimo_intento = CURRENT_TIMESTAMP\nWHERE id = {{ $('Evaluar Resultado').item.json.pendienteId }};",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [1424, -336],
+      "id": "2b945ada-9502-4fd4-9374-26b19fac543c",
+      "name": "Marcar Resuelto",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "dede2af9-820e-4b93-8b9e-5638cc265c19", "leftValue": "={{ $json.intentos + 1 }}", "rightValue": 30, "operator": { "type": "number", "operation": "gte" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1248, 32],
+      "id": "cec7f56c-2d73-4df3-b588-929de8d554c7",
+      "name": "IF: Limite 30"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE finance_odc_pendientes\nSET estado = 'descartado',\n    intentos = intentos + 1,\n    ultimo_intento = CURRENT_TIMESTAMP\nWHERE id = {{ $('Evaluar Resultado').item.json.pendienteId }};",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [1552, 128],
+      "id": "c3b09820-6df7-4af2-a8fc-ae47247e2265",
+      "name": "Marcar Descartado",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE finance_odc_pendientes\nSET intentos = intentos + 1,\n    ultimo_intento = CURRENT_TIMESTAMP\nWHERE id = {{ $('Evaluar Resultado').item.json.pendienteId }};",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [1568, 416],
+      "id": "d1bd6a3a-fb10-4190-9ad1-94ba028bdeea",
+      "name": "Sumar Intento",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron 3am": { "main": [[{ "node": "Leer Pendientes", "type": "main", "index": 0 }]] },
+    "Leer Pendientes": { "main": [[{ "node": "Loop Pendientes", "type": "main", "index": 0 }]] },
+    "Loop Pendientes": { "main": [[], [{ "node": "Listar Archivos Carpeta Pendiente", "type": "main", "index": 0 }]] },
+    "Listar Archivos Carpeta Pendiente": { "main": [[{ "node": "Evaluar Resultado", "type": "main", "index": 0 }]] },
+    "Evaluar Resultado": { "main": [[{ "node": "IF: Hay Archivos", "type": "main", "index": 0 }]] },
+    "IF: Hay Archivos": { "main": [[{ "node": "Invocar Procesamiento", "type": "main", "index": 0 }], [{ "node": "IF: Limite 30", "type": "main", "index": 0 }]] },
+    "Invocar Procesamiento": { "main": [[{ "node": "Marcar Resuelto", "type": "main", "index": 0 }]] },
+    "IF: Limite 30": { "main": [[{ "node": "Marcar Descartado", "type": "main", "index": 0 }], [{ "node": "Sumar Intento", "type": "main", "index": 0 }]] },
+    "Marcar Resuelto": { "main": [[{ "node": "Loop Pendientes", "type": "main", "index": 0 }]] },
+    "Marcar Descartado": { "main": [[{ "node": "Loop Pendientes", "type": "main", "index": 0 }]] },
+    "Sumar Intento": { "main": [[{ "node": "Loop Pendientes", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "binaryMode": "separate" },
+  "versionId": "{{WORKFLOW_VERSION_ID}}",
+  "meta": { "instanceId": "{{INSTANCE_ID}}" },
+  "id": "{{WORKFLOW_ID}}",
+  "tags": []
+}
