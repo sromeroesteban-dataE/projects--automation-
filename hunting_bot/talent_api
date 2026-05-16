@@ -1,0 +1,167 @@
+{
+  "name": "Talent API",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE etl_bi.HR_talent_candidates \nSET status = '{{ $json.body.status }}'\nWHERE linkedin_url = '{{ $json.body.linkedin_url }}';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -32,
+        80
+      ],
+      "id": "fe5f2449-eaf4-478c-8f19-214b58a1d1b3",
+      "name": "Actualizar status mysql",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM etl_bi.HR_talent_candidates\nORDER BY score DESC",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -48,
+        -160
+      ],
+      "id": "2ae37b42-fc37-482f-a9ee-1b07524b7efe",
+      "name": "Leer candidatos mysql",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "talent-candidates",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -272,
+        -160
+      ],
+      "id": "20d2f51b-ce51-42d5-b0fe-5b14b1595094",
+      "name": "Webhook Leer candidatos",
+      "webhookId": "98297ce5-0f94-47db-bcfb-de0668f9cdea"
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        160,
+        -160
+      ],
+      "id": "1aaec60a-98fc-43d0-a166-daadbf44ccf4",
+      "name": "Respond Leer candidatos"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "talent-update-status",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -288,
+        80
+      ],
+      "id": "40dbd6ac-e506-498c-906f-a071d92541e5",
+      "name": "Webhook Actualizar status",
+      "webhookId": "41c940de-a559-4e68-85cd-5af15ada4df4"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"ok\": true}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        160,
+        80
+      ],
+      "id": "5eef0229-4fa6-448b-8ead-e0fe2a87feec",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Actualizar status mysql": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer candidatos mysql": {
+      "main": [
+        [
+          {
+            "node": "Respond Leer candidatos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Leer candidatos": {
+      "main": [
+        [
+          {
+            "node": "Leer candidatos mysql",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Actualizar status": {
+      "main": [
+        [
+          {
+            "node": "Actualizar status mysql",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "{{WORKFLOW_VERSION_ID}}",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "{{INSTANCE_ID}}"
+  },
+  "id": "{{WORKFLOW_ID}}",
+  "tags": []
+}
