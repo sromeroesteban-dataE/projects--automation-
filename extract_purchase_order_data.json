@@ -1,0 +1,520 @@
+{
+  "name": "Extraer Datos ODC",
+  "nodes": [
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.sheetTitle }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [2192, 2096],
+      "id": "5fa71f3c-57b5-482c-80e2-d9d7c74a2fd6",
+      "name": "Leer Spreadsheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const filas = $input.all().map(i => i.json);\n\nlet nombreArchivo = '';\ntry {\n  nombreArchivo = $('Convert Spreadsheet').item.json.name || '';\n} catch(e) {\n  try {\n    nombreArchivo = $('Preparar GSheet').item.json.name || '';\n  } catch(e2) {\n    nombreArchivo = $('Resolver File ID Final').first().json.name || '';\n  }\n}\n\nconst ticketId = $('Resolver File ID Final').first().json.ticketId || null;\n\nconst filasFiltradas = filas.filter(fila =>\n  Object.values(fila).filter(v =>\n    v !== '' && v !== null && v !== undefined && String(v).trim() !== ''\n  ).length >= 2\n);\n\nconst texto = filasFiltradas\n  .map(fila => Object.entries(fila)\n    .map(([k, v]) => `${k}: ${v}`)\n    .join(' | '))\n  .join('\\n');\n\nreturn [{ json: { textoSpreadsheet: texto, NOMBRE_ARCHIVO: nombreArchivo, ticketId: ticketId } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2448, 2096],
+      "id": "cbb46ea1-4a27-4715-8ef4-9258e37cedac",
+      "name": "Spreadsheet a Texto"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1248, 1632],
+      "id": "57a5a9b3-e11d-4914-b562-6f986175e799",
+      "name": "Download file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst ticketId = $input.first().json.ticketId || $('Get Ticket Properties').first().json.ticketId;\nconst fechaInicio = $('Get Ticket Properties').first().json.FECHA_INICIO;\n\nconst todos = items.map(i => i.json).filter(f => {\n  const mime = f.mimeType || '';\n  return mime !== 'application/vnd.google-apps.folder';\n});\n\nconst esDoc = (f) => {\n  const name = (f.name || '').toLowerCase();\n  const mime = f.mimeType || '';\n  return (\n    mime === 'application/pdf' ||\n    mime === 'application/vnd.google-apps.spreadsheet' ||\n    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||\n    name.endsWith('.pdf') ||\n    name.endsWith('.xlsx') ||\n    name.endsWith('.xls')\n  );\n};\n\nconst esImg = (f) => {\n  const name = (f.name || '').toLowerCase();\n  const mime = f.mimeType || '';\n  return (\n    mime === 'image/jpeg' ||\n    mime === 'image/png' ||\n    name.endsWith('.jpg') ||\n    name.endsWith('.jpeg') ||\n    name.endsWith('.png')\n  );\n};\n\nconst docs = todos.filter(esDoc);\nconst imgs = todos.filter(esImg);\n\nconst mesesAliases = {\n  '01': ['enero', 'ene', 'janeiro', 'jan', 'january'],\n  '02': ['febrero', 'feb', 'fevereiro', 'fev', 'february'],\n  '03': ['marzo', 'mar', 'março', 'marco', 'march'],\n  '04': ['abril', 'abr', 'april', 'apr'],\n  '05': ['mayo', 'may', 'maio', 'mai'],\n  '06': ['junio', 'jun', 'junho', 'june'],\n  '07': ['julio', 'jul', 'julho', 'july'],\n  '08': ['agosto', 'ago', 'agost', 'august', 'aug'],\n  '09': ['septiembre', 'setiembre', 'sep', 'sept', 'setembro', 'set', 'september'],\n  '10': ['octubre', 'oct', 'outubro', 'out', 'october'],\n  '11': ['noviembre', 'nov', 'novembro', 'november'],\n  '12': ['diciembre', 'dic', 'dezembro', 'dez', 'december', 'dec']\n};\n\nconst normalizar = (str) => str.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\n\nconst matcheaMes = (nombre, aliases) => {\n  const nombreNorm = normalizar(nombre || '');\n  return aliases.some(alias => {\n    const aliasNorm = normalizar(alias);\n    const regex = new RegExp(`(^|[^a-z])${aliasNorm}([^a-z]|$)`, 'i');\n    return regex.test(nombreNorm);\n  });\n};\n\nconst ultimoModificado = (lista) => {\n  return [...lista].sort((a, b) => new Date(b.modifiedTime) - new Date(a.modifiedTime))[0];\n};\n\nconst pendienteResponse = (motivo) => {\n  const folderId = $('Get Ticket Properties').first().json.id;\n  const link = $('Get Ticket Properties').first().json.originalUrl;\n  return [{ json: { __pendiente: true, motivo: motivo, ticketId: ticketId, link: link, folderId: folderId } }];\n};\n\nconst archivoResponse = (archivo) => {\n  const name = (archivo.name || '').toLowerCase();\n  return [{ json: {\n    id: archivo.id,\n    name: archivo.name || '',\n    mimeType: archivo.mimeType || '',\n    esPDF: archivo.mimeType === 'application/pdf' || name.endsWith('.pdf'),\n    esSpreadsheet: archivo.mimeType === 'application/vnd.google-apps.spreadsheet' || name.endsWith('.xlsx') || name.endsWith('.xls'),\n    esImagen: archivo.mimeType === 'image/jpeg' || archivo.mimeType === 'image/png' || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png'),\n    ticketId: ticketId\n  } }];\n};\n\nif (todos.length === 0) return pendienteResponse('carpeta_vacia');\n\nif (docs.length > 0) {\n  if (docs.length === 1) return archivoResponse(docs[0]);\n  if (!fechaInicio) throw new Error('Hay varios documentos pero el ticket no tiene FECHA_INICIO cargada.');\n  const mes = fechaInicio.substring(5, 7);\n  const aliases = mesesAliases[mes];\n  if (!aliases) throw new Error(`Mes inválido en FECHA_INICIO: ${fechaInicio}`);\n  const matches = docs.filter(f => matcheaMes(f.name, aliases));\n  if (matches.length === 0) return pendienteResponse('sin_match_mes');\n  if (matches.length === 1) return archivoResponse(matches[0]);\n  return archivoResponse(ultimoModificado(matches));\n}\n\nif (imgs.length > 0) {\n  if (fechaInicio) {\n    const mes = fechaInicio.substring(5, 7);\n    const aliases = mesesAliases[mes];\n    if (aliases) {\n      const matches = imgs.filter(f => matcheaMes(f.name, aliases));\n      if (matches.length === 1) return archivoResponse(matches[0]);\n      if (matches.length > 1) return archivoResponse(ultimoModificado(matches));\n    }\n  }\n  return archivoResponse(ultimoModificado(imgs));\n}\n\nreturn pendienteResponse('sin_match_mes');"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [352, 1760],
+      "id": "5b20b817-4a70-4669-b01f-ae2a51dd9a83",
+      "name": "Resolver File ID Final"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "{{WEBHOOK_PATH}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1280, 1776],
+      "id": "93beda69-3ccc-4d06-baab-5c19c1d555c2",
+      "name": "Webhook: HubSpot ODC",
+      "webhookId": "{{WEBHOOK_PATH}}"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\nconst events = Array.isArray(body) ? body : [body];\nconst evento = events.find(e => e.propertyName === 'hs_pipeline_stage');\nif (!evento) return [{ json: { skip: true, motivo: 'Evento no es cambio de stage' } }];\nreturn [{ json: { skip: false, ticketId: evento.objectId } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-944, 1776],
+      "id": "b729778f-02a3-42ab-916a-be9cda07fb12",
+      "name": "Extraer Info del Link"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "conditions": [{ "id": "2b8f7761-ec60-4013-b31f-f53cde8765dc", "leftValue": "={{ $json.esCarpeta }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-288, 1760],
+      "id": "b0b9a61c-4333-41ef-94fe-cddc7a740d7e",
+      "name": "IF: Carpeta o Archivo"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "4162e957-a70f-4553-8441-5822b226ae5a", "name": "RAZON_SOCIAL", "value": "={{ $json.RAZON_SOCIAL?.replace(/'/g, \"\\\\'\") }}", "type": "string" },
+            { "id": "d695b87e-36d3-4028-9b18-c69485e30c42", "name": "TAX_ID", "value": "={{ $json.TAX_ID }}", "type": "string" },
+            { "id": "8a946598-6ae5-4fea-befb-44e0decdf441", "name": "PAIS", "value": "={{ $json.PAIS }}", "type": "string" },
+            { "id": "9f233707-be87-4a20-a097-706929434388", "name": "MONEDA", "value": "={{ $json.MONEDA }}", "type": "string" },
+            { "id": "8896d5ac-50e2-4956-a08e-9cd9a63242bf", "name": "=VALOR_FACTURAR", "value": "={{ $json.VALOR_FACTURAR }}", "type": "number" },
+            { "id": "5c555b43-2df6-4ca1-b5be-3b1690f8eee7", "name": "PERIODO_CAMPANA", "value": "={{ $json.PERIODO_CAMPANA }}", "type": "string" },
+            { "id": "0a0db5ed-8c29-463e-96f1-5f486157fb99", "name": "NRO_ORDEN", "value": "={{ $json.NRO_ORDEN }}", "type": "string" },
+            { "id": "b005ef95-28eb-402a-a0f9-871d0627c89f", "name": "NRO_PLAN_PAUTA", "value": "={{ $json.NRO_PLAN_PAUTA }}", "type": "string" },
+            { "id": "b54cbe1b-acea-4749-8058-3f8798c5146a", "name": "MEDIO", "value": "={{ $json.MEDIO }}", "type": "string" },
+            { "id": "8d032b97-614f-4766-a880-969a27edd752", "name": "PRODUCTO", "value": "={{ $json.PRODUCTO }}", "type": "string" },
+            { "id": "69c04bea-4e39-4418-afee-eee4b4892ec2", "name": "CONTACTO_FACTURA", "value": "={{ $json.CONTACTO_FACTURA }}", "type": "string" },
+            { "id": "1e120a5e-a674-4308-8370-9aca96da7870", "name": "NOMBRE_ARCHIVO", "value": "={{ $json.NOMBRE_ARCHIVO }}", "type": "string" },
+            { "id": "5cd2ef2b-8826-4f1f-b3a2-2f9871a0d6f7", "name": "ticket_id", "value": "={{ $json.ticketId }}", "type": "number" },
+            { "id": "9bd8a1b0-329b-4806-884f-a3b07bb0be3f", "name": "NRO_CONTRATO", "value": "={{ $json.NRO_CONTRATO }}", "type": "string" },
+            { "id": "400db02d-f768-4764-a15d-5ca67d8f727f", "name": "NRO_PRESUPUESTO", "value": "={{ $json.NRO_PRESUPUESTO }}", "type": "string" },
+            { "id": "c0a3b0e0-215f-4ba8-8fb5-c155a903d1c8", "name": "FECHA_INICIO", "value": "={{ $('Get Ticket Properties').first().json.FECHA_INICIO }}", "type": "string" },
+            { "id": "971540f0-a294-4135-a5cc-b88331f0451d", "name": "FECHA_FIN", "value": "={{ $('Get Ticket Properties').first().json.FECHA_FIN }}", "type": "string" },
+            { "id": "30b11d1a-15a2-4bd3-8efa-120f2aba4be8", "name": "CICLO_NUMERO", "value": "={{ $('Get Ticket Properties').first().json.CICLO_NUMERO }}", "type": "number" },
+            { "id": "7ddde717-d603-4c60-ab38-6e405bba0538", "name": "deal_id", "value": "={{ $('Get Ticket Properties').first().json.DEAL_ID_HUBSPOT }}", "type": "number" },
+            { "id": "dd6dd8dc-7b42-43d2-b084-282e27e7aac4", "name": "campaign_id_kite", "value": "={{ $('Get Ticket Properties').first().json.CAMPAIGN_ID_KITE }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3040, 1888],
+      "id": "162abc47-a3c0-4f86-ac49-93d99993b042",
+      "name": "Edit Fields",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const base64Data = $input.item.json.base64PDF;\nconst apiKey = '{{GOOGLE_API_KEY}}';\n\nconst downloadInfo = $('Download file').item.json;\nconst fileName = (downloadInfo.name || '').toLowerCase();\nlet mimeType;\nif (fileName.endsWith('.pdf')) mimeType = 'application/pdf';\nelse if (fileName.endsWith('.png')) mimeType = 'image/png';\nelse if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) mimeType = 'image/jpeg';\nelse mimeType = downloadInfo.mimeType || 'application/pdf';\n\nconst esImagen = mimeType.startsWith('image/');\nconst fechaInicio = $('Get Ticket Properties').first().json.FECHA_INICIO || '';\nconst anioTicket = fechaInicio.substring(0, 4);\nconst mesTicket = fechaInicio.substring(5, 7);\nconst mesesNombres = {\n  '01': 'enero', '02': 'febrero', '03': 'marzo', '04': 'abril',\n  '05': 'mayo', '06': 'junio', '07': 'julio', '08': 'agosto',\n  '09': 'septiembre', '10': 'octubre', '11': 'noviembre', '12': 'diciembre'\n};\nconst nombreMesTicket = mesesNombres[mesTicket] || '';\n\nconst promptOC = `Sos un asistente experto en extracción de datos de documentos de compra de medios (PI - Plano de Investimento u Orden de Publicidad). El documento puede ser una tabla escaneada o con texto. Devolvé ÚNICAMENTE el siguiente JSON sin texto adicional ni backticks ni explicaciones:\\n\\n{\"RAZON_SOCIAL\":\"\",\"TAX_ID\":\"\",\"PAIS\":\"\",\"MONEDA\":\"\",\"VALOR_FACTURAR\":0.0,\"PERIODO_CAMPANA\":\"YYYY-MM\",\"NRO_ORDEN\":\"\",\"NRO_PLAN_PAUTA\":\"\",\"MEDIO\":\"\",\"PRODUCTO\":\"\",\"CONTACTO_FACTURA\":\"NULL\",\"NRO_CONTRATO\":\"NULL\",\"NRO_PRESUPUESTO\":\"NULL\"}\\n\\nINSTRUCCIONES:\\n1. RAZON_SOCIAL: buscá \"Faturar para (Razão Social)\", \"Faturar para\", \"Razón Social\", \"Anunciante\".\\n2. TAX_ID: buscá \"Nro. Documento Fiscal\", \"CUIT\", \"CNPJ\", \"RFC\", \"RUT\". Si no hay, usá NULL.\\n3. PAIS: determiná por moneda o dirección.\\n4. MONEDA: convertí al código ISO.\\n5. VALOR_FACTURAR: buscá \"Total da Inversão\", \"Total de la Inversión\", \"Costo Neto Total\".\\n6. PERIODO_CAMPANA: fecha de inicio de campaña en formato YYYY-MM.\\n7. NRO_ORDEN: buscá \"Nro de Orden\", \"N° Orden\", \"Número de Orden\".\\n8. NRO_PLAN_PAUTA: buscá \"Plan\", \"Pauta\", \"Nro Plan\", \"NCID\".\\n9. MEDIO: buscá \"Medio\", \"Canal\".\\n10. PRODUCTO: buscá \"Producto\", \"Campanha\", \"Campaña\".\\n11. CONTACTO_FACTURA: buscá \"E-mail\", \"Email\", \"Correo\". Si no hay, usá NULL.\\n12. NRO_CONTRATO: si no hay, usá NULL.\\n13. NRO_PRESUPUESTO: si no hay, usá NULL.\\n14. Devolvé SOLO el JSON.`;\n\nconst promptImagen = `La imagen adjunta es una captura sobre una compra de medios publicitarios.\\n\\nCONTEXTO: campaña de ${nombreMesTicket} ${anioTicket}. Extraé SOLO datos de ese mes.\\n\\nDevolvé ÚNICAMENTE JSON:\\n{\"RAZON_SOCIAL\":\"\",\"TAX_ID\":\"\",\"PAIS\":\"\",\"MONEDA\":\"\",\"VALOR_FACTURAR\":0.0,\"NRO_ORDEN\":\"\",\"NRO_PLAN_PAUTA\":\"\",\"MEDIO\":\"\",\"PRODUCTO\":\"\",\"CONTACTO_FACTURA\":\"NULL\",\"NRO_CONTRATO\":\"NULL\",\"NRO_PRESUPUESTO\":\"NULL\"}`;\n\nconst promptElegido = esImagen ? promptImagen : promptOC;\n\nconst geminiResponse = await this.helpers.httpRequest({\n  method: 'POST',\n  url: `{{GEMINI_API_URL}}`,\n  headers: { 'content-type': 'application/json' },\n  body: JSON.stringify({\n    contents: [{ parts: [{ inline_data: { mime_type: mimeType, data: base64Data } }, { text: promptElegido }] }]\n  })\n});\n\nconst text = geminiResponse.candidates[0].content.parts[0].text;\nconst jsonMatch = text.match(/\\{[\\s\\S]*\\}/);\nconst clean = jsonMatch ? jsonMatch[0] : text;\nlet parsed;\ntry { parsed = JSON.parse(clean); } catch(e) { return { json: { raw: text, clean: clean, error: e.message } }; }\nparsed.PRODUCTO = parsed.PRODUCTO || parsed.PRODUTO || 'NULL';\ndelete parsed.PRODUTO;\nparsed.NRO_ORDEN = parsed.NRO_ORDEN || parsed.NRO_ORDEM || 'NULL';\ndelete parsed.NRO_ORDEM;\nif (esImagen && fechaInicio) parsed.PERIODO_CAMPANA = `${anioTicket}-${mesTicket}`;\nparsed.NOMBRE_ARCHIVO = $('Download file').item.json.name || '';\nparsed.ticketId = $('Download file').item.json.ticketId || null;\nreturn { json: parsed };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2720, 1632],
+      "id": "27853fef-dd13-4767-96b9-0194e16463b7",
+      "name": "Gemini Vision: Extraer PDF"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => {\n  const name = (item.json.name || '').toLowerCase();\n  const mimeType = item.json.mimeType || '';\n  const esXLSX = name.endsWith('.xlsx') || name.endsWith('.xls') || mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';\n  const esGoogleSheet = mimeType === 'application/vnd.google-apps.spreadsheet';\n  return { json: { ...item.json, tipoArchivo: esXLSX ? 'xlsx' : esGoogleSheet ? 'gsheet' : 'desconocido' } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1104, 2112],
+      "id": "9a4de7be-ba1c-461b-98dc-ffa9c568b9dc",
+      "name": "Extract Format"
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [736, 1776],
+      "id": "c6221a55-5cf5-4ebf-9828-acbef1f3d208",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "operation": "binaryToPropery",
+        "destinationKey": "base64PDF",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [1920, 1632],
+      "id": "6d7e5b7e-f03b-4c3f-bcdc-312701190c85",
+      "name": "Extract PDF"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{GOOGLE_DRIVE_API_URL}} $json.id }}/copy?supportsAllDrives=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"mimeType\": \"application/vnd.google-apps.spreadsheet\",\n  \"name\": \"{{ $json.name }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1504, 2096],
+      "id": "b6ad3d37-4f88-4dcb-a21f-3665ef46b870",
+      "name": "Convert Spreadsheet",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{GOOGLE_SHEETS_API_URL}} $json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1792, 2096],
+      "id": "85a1554a-1e33-4a9a-a04b-66bbe50bca92",
+      "name": "Leer archivo convertido",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sheets = $input.item.json.sheets;\nconst spreadsheetId = $input.item.json.spreadsheetId;\nconst primeraVisible = sheets.find(s => !s.properties.hidden);\nreturn [{ json: { spreadsheetId, sheetId: primeraVisible.properties.sheetId, sheetTitle: primeraVisible.properties.title } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1984, 2096],
+      "id": "b5cd5c3a-4641-4805-913a-dee26c38d485",
+      "name": "Extraer Hoja"
+    },
+    {
+      "parameters": {
+        "jsCode": "const texto = $input.item.json.textoSpreadsheet;\nconst nombreArchivo = $input.item.json.NOMBRE_ARCHIVO || '';\n\nconst response = await this.helpers.httpRequest({\n  method: 'POST',\n  url: '{{ANTHROPIC_API_URL}}',\n  headers: {\n    'content-type': 'application/json',\n    'x-api-key': '{{ANTHROPIC_API_KEY}}',\n    'anthropic-version': '2023-06-01'\n  },\n  body: JSON.stringify({\n    model: 'claude-haiku-4-5-20251001',\n    max_tokens: 1024,\n    messages: [{\n      role: 'user',\n      content: `Sos un asistente experto en extracción de datos. Analizá el documento y devolvé ÚNICAMENTE el siguiente JSON sin texto adicional ni backticks:\\n\\n{\"RAZON_SOCIAL\":\"\",\"TAX_ID\":\"\",\"PAIS\":\"\",\"MONEDA\":\"\",\"VALOR_FACTURAR\":0.0,\"PERIODO_CAMPANA\":\"YYYY-MM\",\"NRO_ORDEN\":\"\",\"NRO_PLAN_PAUTA\":\"\",\"MEDIO\":\"\",\"PRODUCTO\":\"\",\"CONTACTO_FACTURA\":\"NULL\",\"NRO_CONTRATO\":\"NULL\",\"NRO_PRESUPUESTO\":\"NULL\"}\\n\\nContenido del documento:\\n${texto}`\n    }]\n  })\n});\n\nconst text = response.content[0].text;\nconst clean = text.replace(/```json|```/g, '').trim();\nconst parsed = JSON.parse(clean);\nparsed.NOMBRE_ARCHIVO = nombreArchivo;\nparsed.ticketId = $input.item.json.ticketId || null;\nreturn [{ json: parsed }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2736, 2096],
+      "id": "b8254a4d-a72a-4ffe-8b60-4e9e524c1373",
+      "name": "Claude: Analizar Spreadsheet"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "f94f4289-cd7f-4da6-835b-95484d955ba7", "leftValue": "={{ $json.tipoArchivo }}", "rightValue": "xlsx", "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1280, 2112],
+      "id": "3dbb754d-bcb6-468a-85e8-07b47f679e7a",
+      "name": "IF: esXLSX"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { id: $input.item.json.id, name: $input.item.json.name, dealId: $input.item.json.dealId } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1504, 2336],
+      "id": "e2274d51-cdcc-4fbc-ab0e-78e0a238cc8a",
+      "name": "Preparar GSheet"
+    },
+    {
+      "parameters": {
+        "url": "={{GOOGLE_DRIVE_API_URL}} $json.id }}?fields=id,name,mimeType&supportsAllDrives=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-112, 1920],
+      "id": "48285513-aae3-4061-b10e-4419f5b6ad65",
+      "name": "Obtener Metadatos Archivo",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "ab871172-4a62-4584-9043-b7d04ecd273a", "leftValue": "={{ $json.skip }}", "rightValue": "", "operator": { "type": "boolean", "operation": "false", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [-544, 1776],
+      "id": "d4365b4b-bc7b-4c83-953c-44c0e19672b9",
+      "name": "IF: Es link o \"TBD\""
+    },
+    {
+      "parameters": {
+        "jsCode": "const ticketId = $input.item.json.ticketId;\nconst token = '{{HUBSPOT_PAT_TOKEN}}';\n\nconst response = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `{{HUBSPOT_API_URL}}`,\n  qs: {\n    properties: 'fecha_de_inicio,fecha_de_finalizaci_n,ciclo_numero,deal_id,link_orden_de_publicidad_op,campaignid_kite'\n  },\n  headers: {\n    'Authorization': `Bearer ${token}`,\n    'Content-Type': 'application/json'\n  },\n  json: true\n});\n\nconst props = response.properties || {};\nconst url = props.link_orden_de_publicidad_op || '';\n\nif (!url || (!url.includes('drive.google.com') && !url.includes('docs.google.com'))) {\n  return [{ json: { ...$input.item.json, skip: true, motivo: 'Ticket sin link válido: ' + url } }];\n}\n\nconst esCarpeta = url.includes('/drive/folders/') || url.includes('/folders/');\nlet id = null;\nif (esCarpeta) {\n  const m = url.match(/folders\\/([a-zA-Z0-9_-]+)/);\n  if (m) id = m[1];\n} else {\n  const mFile = url.match(/\\/file\\/d\\/([a-zA-Z0-9_-]+)/);\n  const mOpen = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);\n  const mDocs = url.match(/\\/d\\/([a-zA-Z0-9_-]+)/);\n  if (mFile) id = mFile[1];\n  else if (mOpen) id = mOpen[1];\n  else if (mDocs) id = mDocs[1];\n}\n\nif (!id) return [{ json: { ...$input.item.json, skip: true, motivo: 'No se pudo extraer ID del link: ' + url } }];\n\nreturn [{ json: {\n  ...$input.item.json,\n  id, esCarpeta, originalUrl: url, skip: false,\n  FECHA_INICIO: props.fecha_de_inicio || null,\n  FECHA_FIN: props.fecha_de_finalizaci_n || null,\n  CICLO_NUMERO: props.ciclo_numero || null,\n  DEAL_ID_HUBSPOT: props.deal_id || null,\n  CAMPAIGN_ID_KITE: props.campaignid_kite || null\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, 1776],
+      "id": "809f6b24-0964-4239-9e2f-4032661c663f",
+      "name": "Get Ticket Properties"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { id: $input.item.json.id, name: $input.item.json.name, mimeType: $input.item.json.mimeType, ticketId: $('Extraer Info del Link').first().json.ticketId } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [96, 1920],
+      "id": "1d627eb8-6785-4a1a-b134-f3271aa8a620",
+      "name": "Reinyectar ticketId"
+    },
+    {
+      "parameters": {
+        "url": "={{GOOGLE_DRIVE_API_URL}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q", "value": "='{{ $json.id }}' in parents and trashed=false" },
+            { "name": "fields", "value": "files(id,name,mimeType,modifiedTime)" },
+            { "name": "supportsAllDrives", "value": "true" },
+            { "name": "includeItemsFromAllDrives", "value": "true" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-128, 1616],
+      "id": "a317ddf3-100f-417c-b71e-02043af6c027",
+      "name": "Listar Archivos Drive",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const archivos = $input.first().json.files || [];\nconst ticketId = $('Get Ticket Properties').first().json.ticketId;\nconst folderId = $('Get Ticket Properties').first().json.id;\nconst link = $('Get Ticket Properties').first().json.originalUrl;\nif (archivos.length === 0) return [{ json: { __pendiente: true, motivo: 'carpeta_vacia', ticketId, link, folderId } }];\nreturn archivos.map(f => ({ json: { id: f.id, name: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [48, 1616],
+      "id": "cf929886-ebb9-4f15-bb97-b14fe4f9cba4",
+      "name": "Parsear Listado Drive"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO finance_odc_pendientes (ticket_id, link, folder_id, motivo, estado)\nVALUES (\n  {{ $json.ticketId }},\n  '{{ $json.link }}',\n  '{{ $json.folderId }}',\n  '{{ $json.motivo }}',\n  'pendiente'\n)\nON DUPLICATE KEY UPDATE\n  link = VALUES(link),\n  folder_id = VALUES(folder_id),\n  motivo = VALUES(motivo),\n  estado = 'pendiente',\n  fecha_creacion = CURRENT_TIMESTAMP,\n  intentos = 0,\n  ultimo_intento = NULL,\n  fecha_resolucion = NULL;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [864, 1456],
+      "id": "863e6556-9cd2-4452-be4c-ea202a61e6cc",
+      "name": "Insertar Pendiente",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "ticketId", "type": "number" },
+            { "name": "folderId" },
+            { "name": "link" }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1280, 2128],
+      "id": "b14264bb-0549-4c8f-b52c-1e4fbdc2bd7f",
+      "name": "Trigger: Desde Reintento"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nreturn [{ json: { id: data.folderId, esCarpeta: true, originalUrl: data.link, ticketId: data.ticketId, skip: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-960, 2128],
+      "id": "aedaebe2-257c-4bf9-b0a6-1db639c49518",
+      "name": "Adaptar Datos Reintento"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO finance_odc_datos (\n  ticket_id, deal_id, campaign_id_kite, RAZON_SOCIAL, TAX_ID, PAIS, MONEDA, VALOR_FACTURAR,\n  PERIODO_CAMPANA, FECHA_INICIO, FECHA_FIN, CICLO_NUMERO,\n  NRO_ORDEN, NRO_PLAN_PAUTA, MEDIO, PRODUCTO,\n  CONTACTO_FACTURA, NOMBRE_ARCHIVO, NRO_CONTRATO, NRO_PRESUPUESTO\n) VALUES (\n  {{ $json.ticket_id }},\n  {{ $json.deal_id }},\n  '{{ $json.campaign_id_kite }}',\n  '{{ $json.RAZON_SOCIAL }}',\n  '{{ $json.TAX_ID }}',\n  '{{ $json.PAIS }}',\n  '{{ $json.MONEDA }}',\n  {{ $json.VALOR_FACTURAR }},\n  '{{ $json.PERIODO_CAMPANA }}',\n  '{{ $json.FECHA_INICIO }}',\n  '{{ $json.FECHA_FIN }}',\n  {{ $json.CICLO_NUMERO }},\n  '{{ $json.NRO_ORDEN }}',\n  '{{ $json.NRO_PLAN_PAUTA }}',\n  '{{ $json.MEDIO }}',\n  '{{ String($json.PRODUCTO ?? \\'\\').replace(/\\'/g, \"\\\\\\\\'\" ) }}',\n  '{{ $json.CONTACTO_FACTURA }}',\n  '{{ $json.NOMBRE_ARCHIVO }}',\n  '{{ $json.NRO_CONTRATO }}',\n  '{{ $json.NRO_PRESUPUESTO }}'\n)\nON DUPLICATE KEY UPDATE\n  deal_id = VALUES(deal_id),\n  campaign_id_kite = VALUES(campaign_id_kite),\n  RAZON_SOCIAL = VALUES(RAZON_SOCIAL),\n  TAX_ID = VALUES(TAX_ID),\n  PAIS = VALUES(PAIS),\n  MONEDA = VALUES(MONEDA),\n  VALOR_FACTURAR = VALUES(VALOR_FACTURAR),\n  PERIODO_CAMPANA = VALUES(PERIODO_CAMPANA),\n  FECHA_INICIO = VALUES(FECHA_INICIO),\n  FECHA_FIN = VALUES(FECHA_FIN),\n  CICLO_NUMERO = VALUES(CICLO_NUMERO),\n  NRO_ORDEN = VALUES(NRO_ORDEN),\n  NRO_PLAN_PAUTA = VALUES(NRO_PLAN_PAUTA),\n  MEDIO = VALUES(MEDIO),\n  PRODUCTO = VALUES(PRODUCTO),\n  CONTACTO_FACTURA = VALUES(CONTACTO_FACTURA),\n  NOMBRE_ARCHIVO = VALUES(NOMBRE_ARCHIVO),\n  NRO_CONTRATO = VALUES(NRO_CONTRATO),\n  NRO_PRESUPUESTO = VALUES(NRO_PRESUPUESTO),\n  FECHA_INSERCION = CURRENT_TIMESTAMP;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [3376, 1888],
+      "id": "c0b359ab-e23c-49da-ae3d-3079eb8dd067",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "mySql": {
+          "id": "{{CREDENTIAL_ID}}",
+          "name": "{{CREDENTIAL_NAME}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "conditions": [
+            { "leftValue": "={{ $json.esPDF }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" }, "id": "f543ff95-ee4a-42f5-8cc7-3e4b52a2d345" },
+            { "id": "434baa8d-ccfb-48dc-8b73-e48eb8e36758", "leftValue": "={{ $json.esImagen }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [976, 1792],
+      "id": "be131fe0-1600-4b0d-b099-8ebb2365af7b",
+      "name": "IF: PDF/imagen o Spreadsheet"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "33b1b046-cc00-4a89-8d9c-c67e2f77f793", "leftValue": "={{ $json.__pendiente }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [528, 1760],
+      "id": "cdb43e79-bfa6-4804-bc70-179b97451b9b",
+      "name": "IF: ¿Pendiente sin match mes?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "33b1b046-cc00-4a89-8d9c-c67e2f77f793", "leftValue": "={{ $json.__pendiente }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [224, 1616],
+      "id": "4dd37359-22d9-4627-86ac-4c63da9cb4c3",
+      "name": "IF: ¿Pendiente carpeta vacía?"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Leer Spreadsheet": { "main": [[{ "node": "Spreadsheet a Texto", "type": "main", "index": 0 }]] },
+    "Spreadsheet a Texto": { "main": [[{ "node": "Claude: Analizar Spreadsheet", "type": "main", "index": 0 }]] },
+    "Download file": { "main": [[{ "node": "Extract PDF", "type": "main", "index": 0 }]] },
+    "Resolver File ID Final": { "main": [[{ "node": "IF: ¿Pendiente sin match mes?", "type": "main", "index": 0 }]] },
+    "Webhook: HubSpot ODC": { "main": [[{ "node": "Extraer Info del Link", "type": "main", "index": 0 }]] },
+    "Extraer Info del Link": { "main": [[{ "node": "Get Ticket Properties", "type": "main", "index": 0 }]] },
+    "IF: Carpeta o Archivo": { "main": [[{ "node": "Listar Archivos Drive", "type": "main", "index": 0 }], [{ "node": "Obtener Metadatos Archivo", "type": "main", "index": 0 }]] },
+    "Edit Fields": { "main": [[{ "node": "Loop Over Items", "type": "main", "index": 0 }, { "node": "Execute a SQL query", "type": "main", "index": 0 }]] },
+    "Gemini Vision: Extraer PDF": { "main": [[{ "node": "Edit Fields", "type": "main", "index": 0 }]] },
+    "Extract Format": { "main": [[{ "node": "IF: esXLSX", "type": "main", "index": 0 }]] },
+    "Loop Over Items": { "main": [[], [{ "node": "IF: PDF/imagen o Spreadsheet", "type": "main", "index": 0 }]] },
+    "Extract PDF": { "main": [[{ "node": "Gemini Vision: Extraer PDF", "type": "main", "index": 0 }]] },
+    "Convert Spreadsheet": { "main": [[{ "node": "Leer archivo convertido", "type": "main", "index": 0 }]] },
+    "Leer archivo convertido": { "main": [[{ "node": "Extraer Hoja", "type": "main", "index": 0 }]] },
+    "Extraer Hoja": { "main": [[{ "node": "Leer Spreadsheet", "type": "main", "index": 0 }]] },
+    "Claude: Analizar Spreadsheet": { "main": [[{ "node": "Edit Fields", "type": "main", "index": 0 }]] },
+    "IF: esXLSX": { "main": [[{ "node": "Convert Spreadsheet", "type": "main", "index": 0 }], [{ "node": "Preparar GSheet", "type": "main", "index": 0 }]] },
+    "Preparar GSheet": { "main": [[{ "node": "Leer archivo convertido", "type": "main", "index": 0 }]] },
+    "Obtener Metadatos Archivo": { "main": [[{ "node": "Reinyectar ticketId", "type": "main", "index": 0 }]] },
+    "IF: Es link o \"TBD\"": { "main": [[{ "node": "IF: Carpeta o Archivo", "type": "main", "index": 0 }]] },
+    "Get Ticket Properties": { "main": [[{ "node": "IF: Es link o \"TBD\"", "type": "main", "index": 0 }]] },
+    "Reinyectar ticketId": { "main": [[{ "node": "Resolver File ID Final", "type": "main", "index": 0 }]] },
+    "Listar Archivos Drive": { "main": [[{ "node": "Parsear Listado Drive", "type": "main", "index": 0 }]] },
+    "Parsear Listado Drive": { "main": [[{ "node": "IF: ¿Pendiente carpeta vacía?", "type": "main", "index": 0 }]] },
+    "Adaptar Datos Reintento": { "main": [[{ "node": "Get Ticket Properties", "type": "main", "index": 0 }]] },
+    "Trigger: Desde Reintento": { "main": [[{ "node": "Adaptar Datos Reintento", "type": "main", "index": 0 }]] },
+    "IF: PDF/imagen o Spreadsheet": { "main": [[{ "node": "Download file", "type": "main", "index": 0 }], [{ "node": "Extract Format", "type": "main", "index": 0 }]] },
+    "IF: ¿Pendiente sin match mes?": { "main": [[{ "node": "Insertar Pendiente", "type": "main", "index": 0 }], [{ "node": "Loop Over Items", "type": "main", "index": 0 }]] },
+    "IF: ¿Pendiente carpeta vacía?": { "main": [[{ "node": "Insertar Pendiente", "type": "main", "index": 0 }], [{ "node": "Resolver File ID Final", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "{{WORKFLOW_VERSION_ID}}",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "{{INSTANCE_ID}}"
+  },
+  "id": "{{WORKFLOW_ID}}",
+  "tags": []
+}
